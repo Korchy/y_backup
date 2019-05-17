@@ -42,7 +42,7 @@ class YandexBackup {
 
 					$rezArr = json_decode($result, true);
 
-					// Проверка на авторизацию
+					// Authorization check
 					if(isset($rezArr['message']) && $rezArr['message'] == 'Не авторизован.') {
 						// Authorization error
 						mail(static::$mailTo, static::$serverId.' - YandexBackup error', "Yandex-disk authorization error. \n Maybe service needs new token. \n"."Yandex responce: ".$result." \n File: ".$file, 'From: '.static::$serverId.' <'.static::$mailFrom.'>');
