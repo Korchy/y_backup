@@ -11,23 +11,34 @@ class YandexBackup {
 	private static $dest_dir = '_YANDEX_BACKUP_DIR_';				// path to destination folder on Yandex-disk to place backuping files. (ex: backup/myserver_backup/)
 	private static $src_month_dir = '_SERVER_BACKUP_MONTH_DIR_';	// path to backuping files on local computer (once a month copy) (ex: /var/mybackups/monthly/)
 	private static $dest_month_dir = '_YANDEX_BACKUP_MONTH_DIR_';	// path to destination folder on Yandex-disk to place backuping files (once month copy) (ex: backup/myserver_backup_monthly/)
+	private static $log_path = '/var/log/yandex_backup.log';		// path to log file
 	
 	public static function sendBackupToYandex() {
 		// Move backup files to Yandex-disk
 		// Dayly
+		static::log('=== DAYLY BACKUP ===');
 		static::sendFilesFromDirToYandex(static::$src_dir, static::$dest_dir, '_'.date('d').'_');	// current day
 		// Monthly
 		if(date('d') == '01') {
+			static::log('=== MONTHLY BACKUP ===');
 			static::sendFilesFromDirToYandex(static::$src_month_dir, static::$dest_month_dir, '_01_'.date('m').'_');	// 01 day of a month
 		}
 	}
 
-	public static function sendFilesFromDirToYandex($sourceDir, $destDir, $template) {
-		// Send files from $sourceDir to Yandex-disk $destDir. $template - mask to filter files.
-		$files = scandir($sourceDir);
+	private static function sendFilesFromDirToYandex($source_dir, $destDir, $template) {
+		// Send files from $source_dir to Yandex-disk $destDir. $template - mask to filter files.
+		// scan $source_dir for files (except directories and . and ..)
+		$files = array_filter(
+			scandir($source_dir),
+			function($item) use ($source_dir) {
+				return !is_dir($source_dir . $item) && !in_array($item, ['.', '..']);
+			}
+		);
+		static::log('Found: ' . count($files) . ' flies');
 		foreach($files as $file) {
-			if(file_exists($sourceDir.$file)) {
+			if(file_exists($source_dir.$file)) {
 				if(strpos($file, $template) !== false) {
+					static::log('Sending: ' . $file);
 					$curl_err = '';
 					$header = array(
 						'Accept: application/json',
@@ -41,21 +52,24 @@ class YandexBackup {
 					curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
 					curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
 					$result = curl_exec($ch);
+
 					// check errors
 					$last_err = curl_error($ch);
 					if($last_err) {
-						// error_log('CURL ERR: ' . $last_err);
-						// echo 'CURL ERR: ' . var_export($last_err, true);
-						$curl_err .= 'CURL ERR:' . chr(13) . var_export($last_err, true);
+						$curl_err .= 'CURL ERR:' . PHP_EOL . var_export($last_err, true);
 					}
+
 					curl_close($ch);
 
 					$rezArr = json_decode($result, true);
 
-					// Connecting check
-					if(!$result) {
-						// Maybe authorization error
-						mail(static::$mailTo, static::$serverId.' - YandexBackup error', 'Yandex-disk authorization error. \n Maybe service needs new token. \n' . 'Yandex responce: ' . $result . ' \n Файл: ' . $file . '\n' . $curl_err, 'From: ' . static::$serverId . ' <'.static::$mailFrom.'>');
+					// Проверка на авторизацию
+					// if(!result || isset($rezArr['message']) && $rezArr['message'] == 'Не авторизован.') {
+					if(!$result || isset($rezArr['message'])) {
+						// Ошибка авторизации
+						static::log('CURL ERR: ' . $curl_err);
+						static::log('REZULT: ' . var_export($result, true));
+						mail(static::$mailTo, static::$serverId.' - YandexBackup error', 'Ошибка авторизации при сохранении бекапа на Яндекс-диск. \n Возможно нужен новый токен. \n' . 'Ответ сервера: ' . var_export($result, true) . ' \n Файл: '.$file . '\n' . $curl_err, 'From: ' . static::$serverId . ' <'.static::$mailFrom.'>');
 					}
 					else {
 						// Upload $file to yandex-disk
@@ -65,14 +79,12 @@ class YandexBackup {
 						curl_setopt($ch, CURLOPT_URL, $uploadRef);
 						curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
 						curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-						curl_setopt($ch, CURLOPT_POSTFIELDS, file_get_contents($sourceDir.$file));
+						curl_setopt($ch, CURLOPT_POSTFIELDS, file_get_contents($source_dir . $file));
 						$result = curl_exec($ch);
 						
 						// check errors
 						$last_err = curl_error($ch);
 						if($last_err) {
-							// error_log('CURL ERR: ' . $last_err);
-							// echo 'CURL ERR: ' . var_export($last_err, true);
 							$curl_err .= 'CURL ERR:' . chr(13) . var_export($last_err, true);
 						}
 
@@ -80,20 +92,32 @@ class YandexBackup {
 
 						if($result == '1') {
 							// remove source file
-							if(static::$deleteAfterBackup) unlink($sourceDir.$file);
-						}
+							if(static::$deleteAfterBackup) unlink($source_dir . $file);
+							static::log('OK');
+							}
 						else {
 							// Error uploading file to yandex-disk
-							mail(static::$mailTo, static::$serverId.' - YandexBackup error', 'Error uploading file to Yandex-disk. \n Файл: ' . $file . '\n' . var_export($result, true) . '\n' . $curl_err, 'From: ' . static::$serverId . ' <'.static::$mailFrom.'>');
+							static::log('CURL ERR: ' . $curl_err);
+							static::log('REZULT: ' . var_export($result, true));
+							mail(static::$mailTo, static::$serverId . ' - YandexBackup error', 'Ошибка загрузки файла при сохранении бекапа на Яндекс-диск. \n Файл: ' . $file . '\n' . var_export($result, true) . '\n' . $curl_err, 'From: ' . static::$serverId . ' <'.static::$mailFrom.'>');
 						}
 					}
 				}
 			}
 		}
 	}
+
+	private static function log($info) {
+		// Add info to the log-file
+		$log_file = fopen(static::$log_path, 'ab');
+		$info = (is_array($info) ? var_export($info, true) : $info);
+		fputs($log_file, date('Y-m-d H:i:s') . ':    ' . $info . PHP_EOL);
+		fclose($log_file);
+	}
 }
 
 // run backup to yandex
+echo "Backup to Yandex-disk";
 YandexBackup::sendBackupToYandex();
 
 ?>
